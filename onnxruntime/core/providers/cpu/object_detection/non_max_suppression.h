@@ -18,7 +18,7 @@ class NonMaxSuppressionBase {
   static bool SuppressByIOU(const float* boxes_data, int64_t box_index1, int64_t box_index2, int64_t center_point_box,
                             float iou_threshold);
 
-  static void MaxMin(const float& lhs, const float& rhs, float& min, float& max) {
+  static void MaxMin(float lhs, float rhs, float& min, float& max) {
     if (lhs >= rhs) {
       min = rhs;
       max = lhs;
@@ -40,15 +40,9 @@ class NonMaxSuppressionBase {
     int64_t num_batches_ = 0;
     int64_t num_classes_ = 0;
     int64_t num_boxes_ = 0;
-    int64_t max_output_boxes_per_class_ = 0;
-    int64_t max_output_boxes_per_batch_ = 0;
-    float iou_threshold_ = .0f;
-    bool has_score_threshold_ = false;
-    float score_threshold_ = .0f;
   };
 
-  static Status PrepareCompute(OpKernelContext* ctx, const TensorShape& boxes_shape, const TensorShape& scores_shape,
-                               PrepareContext& pc);
+  static Status PrepareCompute(OpKernelContext* ctx, PrepareContext& pc);
 
   int64_t GetCenterPointBox() const {
     return center_point_box_;
@@ -64,5 +58,12 @@ class NonMaxSuppression final : public OpKernel, public NonMaxSuppressionBase {
   }
 
   Status Compute(OpKernelContext* context) const override;
+
+ private:
+  Status GetThresholdsFromInputs(OpKernelContext* ctx,
+                                 int64_t& max_output_boxes_per_class,
+                                 float& iou_threshold,
+                                 bool& has_score_threshold,
+                                 float& score_threshold) const;
 };
 }  // namespace onnxruntime

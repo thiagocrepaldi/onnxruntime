@@ -25,7 +25,7 @@ ONNX_OPERATOR_KERNEL_EX(
     NonMaxSuppression);
 
 bool NonMaxSuppressionBase::SuppressByIOU(const float* boxes_data, int64_t box_index1, int64_t box_index2,
-                                      int64_t center_point_box, float iou_threshold) {
+                                          int64_t center_point_box, float iou_threshold) {
   float x1_min{};
   float y1_min{};
   float x1_max{};
@@ -84,12 +84,13 @@ bool NonMaxSuppressionBase::SuppressByIOU(const float* boxes_data, int64_t box_i
   return intersection_over_union > iou_threshold;
 }
 
-Status NonMaxSuppressionBase::PrepareCompute(OpKernelContext* ctx, const TensorShape& boxes_shape, const TensorShape& scores_shape,
-                                         PrepareContext& pc) {
+Status NonMaxSuppressionBase::PrepareCompute(OpKernelContext* ctx, PrepareContext& pc) {
+  const auto& boxes_shape = ctx->Input<Tensor>(0)->Shape();
+  const auto& scores_shape = ctx->Input<Tensor>(1)->Shape();
+
   ORT_RETURN_IF_NOT(boxes_shape.NumDimensions() == 3, "boxes must be a 3D tensor.");
   ORT_RETURN_IF_NOT(scores_shape.NumDimensions() == 3, "scores must be a 3D tensor.");
 
-  const auto num_inputs = ctx->InputCount();
   auto boxes_dims = boxes_shape.GetDims();
   auto scores_dims = scores_shape.GetDims();
   ORT_RETURN_IF_NOT(boxes_dims[0] == scores_dims[0], "boxes and scores should have same num_batches.");
@@ -100,28 +101,39 @@ Status NonMaxSuppressionBase::PrepareCompute(OpKernelContext* ctx, const TensorS
   pc.num_classes_ = scores_dims[1];
   pc.num_boxes_ = boxes_dims[1];
 
-  const auto* max_output_boxes_per_class_tensor = ctx->Input<Tensor>(2);
-  if (max_output_boxes_per_class_tensor != nullptr) {
-    pc.max_output_boxes_per_class_ = *(max_output_boxes_per_class_tensor->Data<int64_t>());
-    pc.max_output_boxes_per_class_ = std::max(pc.max_output_boxes_per_class_, 0ll);
-  }
+  return Status::OK();
+}
+
+Status NonMaxSuppression::GetThresholdsFromInputs(OpKernelContext* ctx,
+                                                  int64_t& max_output_boxes_per_class,
+                                                  float& iou_threshold,
+                                                  bool& has_score_threshold,
+                                                  float& score_threshold) const {
+  const auto num_inputs = ctx->InputCount();
 
   if (num_inputs > 2) {
-    const auto* iou_threshold_tensor = ctx->Input<Tensor>(3);
-    if (iou_threshold_tensor != nullptr) {
-      pc.iou_threshold_ = *(iou_threshold_tensor->Data<float>());
-      ORT_RETURN_IF_NOT((pc.iou_threshold_ >= 0 && pc.iou_threshold_ <= 1), "iou_threshold must be in range [0, 1].");
+    const auto* max_output_boxes_per_class_tensor = ctx->Input<Tensor>(2);
+    if (max_output_boxes_per_class_tensor != nullptr) {
+      max_output_boxes_per_class = *(max_output_boxes_per_class_tensor->Data<int64_t>());
+      max_output_boxes_per_class = std::max(max_output_boxes_per_class, 0ll);
     }
   }
 
   if (num_inputs > 3) {
-    const auto* score_threshold_tensor = ctx->Input<Tensor>(4);
-    if (score_threshold_tensor != nullptr) {
-      pc.has_score_threshold_ = true;
-      pc.score_threshold_ = *(score_threshold_tensor->Data<float>());
+    const auto* iou_threshold_tensor = ctx->Input<Tensor>(3);
+    if (iou_threshold_tensor != nullptr) {
+      iou_threshold = *(iou_threshold_tensor->Data<float>());
+      ORT_RETURN_IF_NOT((iou_threshold >= 0 && iou_threshold <= 1.f), "iou_threshold must be in range [0, 1].");
     }
   }
 
+  if (num_inputs > 4) {
+    const auto* score_threshold_tensor = ctx->Input<Tensor>(4);
+    if (score_threshold_tensor != nullptr) {
+      has_score_threshold = true;
+      score_threshold = *(score_threshold_tensor->Data<float>());
+    }
+  }
   return Status::OK();
 }
 
@@ -131,15 +143,19 @@ Status NonMaxSuppression::Compute(OpKernelContext* ctx) const {
   const auto* scores = ctx->Input<Tensor>(1);
   ORT_ENFORCE(scores);
 
-  auto& boxes_shape = boxes->Shape();
-  auto& scores_shape = scores->Shape();
-
   PrepareContext pc;
-
-  auto ret = PrepareCompute(ctx, boxes_shape, scores_shape, pc);
+  auto ret = PrepareCompute(ctx, pc);
   ORT_RETURN_IF_NOT(ret.IsOK(), ret.ErrorMessage());
 
-  if (0 == pc.max_output_boxes_per_class_) {
+  int64_t max_output_boxes_per_class = 0;
+  float iou_threshold = .0f;
+  bool has_score_threshold = false;
+  float score_threshold = .0f;
+
+  ret = GetThresholdsFromInputs(ctx, max_output_boxes_per_class, iou_threshold, has_score_threshold, score_threshold);
+  ORT_RETURN_IF_NOT(ret.IsOK(), ret.ErrorMessage());
+
+  if (0 == max_output_boxes_per_class) {
     ctx->Output(0, {0, 3});
     return Status::OK();
   }
@@ -159,7 +175,6 @@ Status NonMaxSuppression::Compute(OpKernelContext* ctx) const {
     }
   };
 
-  const bool has_score_threshold = pc.has_score_threshold_;
   const auto center_point_box = GetCenterPointBox();
 
   std::vector<SelectedIndex> selected_indices;
@@ -169,15 +184,22 @@ Status NonMaxSuppression::Compute(OpKernelContext* ctx) const {
       int64_t box_offset = batch_index * pc.num_classes_ * pc.num_boxes_ * 4;
       // Filter by score_threshold_
       std::priority_queue<ScoreIndexPair, std::deque<ScoreIndexPair>> sorted_scores_with_index;
-      for (int64_t box_index = 0; box_index < pc.num_boxes_; ++box_index) {
-        if (!has_score_threshold || (has_score_threshold && scores_data[box_score_offset + box_index] > pc.score_threshold_)) {
-          sorted_scores_with_index.emplace(scores_data[box_score_offset + box_index], box_index);
+      const auto* class_scores = scores_data + box_score_offset;
+      if (has_score_threshold) {
+        for (int64_t box_index = 0; box_index < pc.num_boxes_; ++box_index, ++class_scores) {
+          if (*class_scores > score_threshold) {
+            sorted_scores_with_index.emplace(*class_scores, box_index);
+          }
+        }
+      } else {
+        for (int64_t box_index = 0; box_index < pc.num_boxes_; ++box_index) {
+          sorted_scores_with_index.emplace(*class_scores, box_index);
         }
       }
 
       ScoreIndexPair next_top_score;
       std::vector<int64_t> selected_indicies_inside_class;
-      // Get the next box with top score, filter by iou_threshold_
+      // Get the next box with top score, filter by iou_threshold
       while (!sorted_scores_with_index.empty()) {
         next_top_score = sorted_scores_with_index.top();
         sorted_scores_with_index.pop();
@@ -186,15 +208,15 @@ Status NonMaxSuppression::Compute(OpKernelContext* ctx) const {
         // Check with existing selected boxes for this class, suppress if exceed the IOU (Intersection Over Union) threshold
         for (int64_t selected_index : selected_indicies_inside_class) {
           if (SuppressByIOU(boxes_data + box_offset, selected_index, next_top_score.index_,
-                            center_point_box, pc.iou_threshold_)) {
+                            center_point_box, iou_threshold)) {
             selected = false;
             break;
           }
         }
 
         if (selected) {
-          if (pc.max_output_boxes_per_class_ > 0 &&
-              static_cast<int64_t>(selected_indicies_inside_class.size()) >= pc.max_output_boxes_per_class_) {
+          if (max_output_boxes_per_class > 0 &&
+              static_cast<int64_t>(selected_indicies_inside_class.size()) >= max_output_boxes_per_class) {
             break;
           }
           selected_indicies_inside_class.push_back(next_top_score.index_);
