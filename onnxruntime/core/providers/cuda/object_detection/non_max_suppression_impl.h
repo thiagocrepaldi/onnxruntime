@@ -3,12 +3,18 @@
 
 #pragma once
 
+#include <stdint.h>
+
 namespace onnxruntime {
+
+struct PrepareContext;
+
 namespace cuda {
 
-void NonMaxSuppressionImpl(const float* boxes, const float* scores, int64_t num_batches,
-                           int64_t num_classes, int64_t num_boxes,
-                           float score_threshold, float iou_threshold);
+//void NonMaxSuppressionImpl(const float* boxes, const float* scores,
+//                           int64_t max_output_boxes_per_class,
+//                           float score_threshold,
+//                           float iou_threshold);
 
 }  // namespace cuda
 }  // namespace onnxruntime

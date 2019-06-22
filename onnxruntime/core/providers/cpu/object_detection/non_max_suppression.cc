@@ -12,6 +12,7 @@ limitations under the License.
 /* Modifications Copyright (c) Microsoft. */
 
 #include "non_max_suppression.h"
+#include "non_max_suppression_helper.h"
 #include <queue>
 
 namespace onnxruntime {
@@ -24,69 +25,67 @@ ONNX_OPERATOR_KERNEL_EX(
     KernelDefBuilder(),
     NonMaxSuppression);
 
-bool NonMaxSuppressionBase::SuppressByIOU(const float* boxes_data, int64_t box_index1, int64_t box_index2,
-                                          int64_t center_point_box, float iou_threshold) {
-  float x1_min{};
-  float y1_min{};
-  float x1_max{};
-  float y1_max{};
-  float x2_min{};
-  float y2_min{};
-  float x2_max{};
-  float y2_max{};
-  // center_point_box_ only support 0 or 1
-  if (0 == center_point_box) {
-    // boxes data format [y1, x1, y2, x2],
-    MaxMin(boxes_data[4 * box_index1 + 1], boxes_data[4 * box_index1 + 3], x1_min, x1_max);
-    MaxMin(boxes_data[4 * box_index1 + 0], boxes_data[4 * box_index1 + 2], y1_min, y1_max);
-    MaxMin(boxes_data[4 * box_index2 + 1], boxes_data[4 * box_index2 + 3], x2_min, x2_max);
-    MaxMin(boxes_data[4 * box_index2 + 0], boxes_data[4 * box_index2 + 2], y2_min, y2_max);
-  } else {
-    // 1 == center_point_box_ => boxes data format [x_center, y_center, width, height]
-    float box1_width_half = boxes_data[4 * box_index1 + 2] / 2;
-    float box1_height_half = boxes_data[4 * box_index1 + 3] / 2;
-    float box2_width_half = boxes_data[4 * box_index2 + 2] / 2;
-    float box2_height_half = boxes_data[4 * box_index2 + 3] / 2;
+using namespace nms_helpers;
 
-    x1_min = boxes_data[4 * box_index1 + 0] - box1_width_half;
-    x1_max = boxes_data[4 * box_index1 + 0] + box1_width_half;
-    y1_min = boxes_data[4 * box_index1 + 1] - box1_height_half;
-    y1_max = boxes_data[4 * box_index1 + 1] + box1_height_half;
-
-    x2_min = boxes_data[4 * box_index2 + 0] - box2_width_half;
-    x2_max = boxes_data[4 * box_index2 + 0] + box2_width_half;
-    y2_min = boxes_data[4 * box_index2 + 1] - box2_height_half;
-    y2_max = boxes_data[4 * box_index2 + 1] + box2_height_half;
+// CPU version
+namespace nms_helpers {
+Status GetThresholdsFromInputs(const PrepareContext& pc,
+                               int64_t& max_output_boxes_per_class,
+                               float& iou_threshold,
+                               float& score_threshold) {
+  if (pc.max_output_boxes_per_class_ != nullptr) {
+    max_output_boxes_per_class = std::max(*pc.max_output_boxes_per_class_, 0ll);
   }
 
-  const float intersection_x_min = std::max(x1_min, x2_min);
-  const float intersection_y_min = std::max(y1_min, y2_min);
-  const float intersection_x_max = std::min(x1_max, x2_max);
-  const float intersection_y_max = std::min(y1_max, y2_max);
-
-  const float intersection_area = std::max(intersection_x_max - intersection_x_min, .0f) *
-                                  std::max(intersection_y_max - intersection_y_min, .0f);
-
-  if (intersection_area <= .0f) {
-    return false;
+  if (pc.iou_threshold_ != nullptr) {
+    iou_threshold = *pc.iou_threshold_;
+    ORT_RETURN_IF_NOT((iou_threshold >= 0 && iou_threshold <= 1.f), "iou_threshold must be in range [0, 1].");
   }
 
-  const float area1 = (x1_max - x1_min) * (y1_max - y1_min);
-  const float area2 = (x2_max - x2_min) * (y2_max - y2_min);
-  const float union_area = area1 + area2 - intersection_area;
-
-  if (area1 <= .0f || area2 <= .0f || union_area <= .0f) {
-    return false;
+  if (pc.score_threshold_ != nullptr) {
+    score_threshold = *pc.score_threshold_;
   }
 
-  const float intersection_over_union = intersection_area / union_area;
-
-  return intersection_over_union > iou_threshold;
+  return Status::OK();
 }
+}  // namespace nms_helpers
 
 Status NonMaxSuppressionBase::PrepareCompute(OpKernelContext* ctx, PrepareContext& pc) {
-  const auto& boxes_shape = ctx->Input<Tensor>(0)->Shape();
-  const auto& scores_shape = ctx->Input<Tensor>(1)->Shape();
+  const auto* boxes_tensor = ctx->Input<Tensor>(0);
+  ORT_ENFORCE(boxes_tensor);
+  pc.boxes_data_ = boxes_tensor->Data<float>();
+
+  const auto* scores_tensor = ctx->Input<Tensor>(1);
+  ORT_ENFORCE(scores_tensor);
+  pc.scores_data_ = scores_tensor->Data<float>();
+
+  const auto num_inputs = ctx->InputCount();
+
+  if (num_inputs > 2) {
+    const auto* max_output_boxes_per_class_tensor = ctx->Input<Tensor>(2);
+    if (max_output_boxes_per_class_tensor != nullptr) {
+      pc.max_output_boxes_per_class_ = max_output_boxes_per_class_tensor->Data<int64_t>();
+    }
+  }
+
+  if (num_inputs > 3) {
+    const auto* iou_threshold_tensor = ctx->Input<Tensor>(3);
+    if (iou_threshold_tensor != nullptr) {
+      pc.iou_threshold_ = iou_threshold_tensor->Data<float>();
+    }
+  }
+
+  if (num_inputs > 4) {
+    const auto* score_threshold_tensor = ctx->Input<Tensor>(4);
+    if (score_threshold_tensor != nullptr) {
+      pc.score_threshold_ = score_threshold_tensor->Data<float>();
+    }
+  }
+
+  const auto& boxes_shape = boxes_tensor->Shape();
+  pc.boxes_size_ = boxes_shape.Size();
+  const auto& scores_shape = scores_tensor->Shape();
+  pc.scores_size_ = scores_shape.Size();
 
   ORT_RETURN_IF_NOT(boxes_shape.NumDimensions() == 3, "boxes must be a 3D tensor.");
   ORT_RETURN_IF_NOT(scores_shape.NumDimensions() == 3, "scores must be a 3D tensor.");
@@ -104,55 +103,16 @@ Status NonMaxSuppressionBase::PrepareCompute(OpKernelContext* ctx, PrepareContex
   return Status::OK();
 }
 
-Status NonMaxSuppression::GetThresholdsFromInputs(OpKernelContext* ctx,
-                                                  int64_t& max_output_boxes_per_class,
-                                                  float& iou_threshold,
-                                                  bool& has_score_threshold,
-                                                  float& score_threshold) const {
-  const auto num_inputs = ctx->InputCount();
-
-  if (num_inputs > 2) {
-    const auto* max_output_boxes_per_class_tensor = ctx->Input<Tensor>(2);
-    if (max_output_boxes_per_class_tensor != nullptr) {
-      max_output_boxes_per_class = *(max_output_boxes_per_class_tensor->Data<int64_t>());
-      max_output_boxes_per_class = std::max(max_output_boxes_per_class, 0ll);
-    }
-  }
-
-  if (num_inputs > 3) {
-    const auto* iou_threshold_tensor = ctx->Input<Tensor>(3);
-    if (iou_threshold_tensor != nullptr) {
-      iou_threshold = *(iou_threshold_tensor->Data<float>());
-      ORT_RETURN_IF_NOT((iou_threshold >= 0 && iou_threshold <= 1.f), "iou_threshold must be in range [0, 1].");
-    }
-  }
-
-  if (num_inputs > 4) {
-    const auto* score_threshold_tensor = ctx->Input<Tensor>(4);
-    if (score_threshold_tensor != nullptr) {
-      has_score_threshold = true;
-      score_threshold = *(score_threshold_tensor->Data<float>());
-    }
-  }
-  return Status::OK();
-}
-
 Status NonMaxSuppression::Compute(OpKernelContext* ctx) const {
-  const auto* boxes = ctx->Input<Tensor>(0);
-  ORT_ENFORCE(boxes);
-  const auto* scores = ctx->Input<Tensor>(1);
-  ORT_ENFORCE(scores);
-
   PrepareContext pc;
   auto ret = PrepareCompute(ctx, pc);
   ORT_RETURN_IF_NOT(ret.IsOK(), ret.ErrorMessage());
 
   int64_t max_output_boxes_per_class = 0;
   float iou_threshold = .0f;
-  bool has_score_threshold = false;
   float score_threshold = .0f;
 
-  ret = GetThresholdsFromInputs(ctx, max_output_boxes_per_class, iou_threshold, has_score_threshold, score_threshold);
+  ret = GetThresholdsFromInputs(pc, max_output_boxes_per_class, iou_threshold, score_threshold);
   ORT_RETURN_IF_NOT(ret.IsOK(), ret.ErrorMessage());
 
   if (0 == max_output_boxes_per_class) {
@@ -160,8 +120,8 @@ Status NonMaxSuppression::Compute(OpKernelContext* ctx) const {
     return Status::OK();
   }
 
-  const auto* boxes_data = boxes->Data<float>();
-  const auto* scores_data = scores->Data<float>();
+  const auto* const boxes_data = pc.boxes_data_;
+  const auto* const scores_data = pc.scores_data_;
 
   struct ScoreIndexPair {
     float score_{};
@@ -185,14 +145,14 @@ Status NonMaxSuppression::Compute(OpKernelContext* ctx) const {
       // Filter by score_threshold_
       std::priority_queue<ScoreIndexPair, std::deque<ScoreIndexPair>> sorted_scores_with_index;
       const auto* class_scores = scores_data + box_score_offset;
-      if (has_score_threshold) {
+      if (pc.score_threshold_ != nullptr) {
         for (int64_t box_index = 0; box_index < pc.num_boxes_; ++box_index, ++class_scores) {
           if (*class_scores > score_threshold) {
             sorted_scores_with_index.emplace(*class_scores, box_index);
           }
         }
       } else {
-        for (int64_t box_index = 0; box_index < pc.num_boxes_; ++box_index) {
+        for (int64_t box_index = 0; box_index < pc.num_boxes_; ++box_index, ++class_scores) {
           sorted_scores_with_index.emplace(*class_scores, box_index);
         }
       }

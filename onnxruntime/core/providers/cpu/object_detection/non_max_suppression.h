@@ -8,39 +8,14 @@
 
 namespace onnxruntime {
 
+struct PrepareContext;
+
 class NonMaxSuppressionBase {
  protected:
   explicit NonMaxSuppressionBase(const OpKernelInfo& info) {
     center_point_box_ = info.GetAttrOrDefault<int64_t>("center_point_box", 0);
     ORT_ENFORCE(0 == center_point_box_ || 1 == center_point_box_, "center_point_box only support 0 or 1");
   }
-
-  static bool SuppressByIOU(const float* boxes_data, int64_t box_index1, int64_t box_index2, int64_t center_point_box,
-                            float iou_threshold);
-
-  static void MaxMin(float lhs, float rhs, float& min, float& max) {
-    if (lhs >= rhs) {
-      min = rhs;
-      max = lhs;
-    } else {
-      min = lhs;
-      max = rhs;
-    }
-  }
-
-  struct SelectedIndex {
-    SelectedIndex(int64_t batch_index, int64_t class_index, int64_t box_index)
-        : batch_index_(batch_index), class_index_(class_index), box_index_(box_index) {}
-    int64_t batch_index_ = 0;
-    int64_t class_index_ = 0;
-    int64_t box_index_ = 0;
-  };
-
-  struct PrepareContext {
-    int64_t num_batches_ = 0;
-    int64_t num_classes_ = 0;
-    int64_t num_boxes_ = 0;
-  };
 
   static Status PrepareCompute(OpKernelContext* ctx, PrepareContext& pc);
 
@@ -58,12 +33,5 @@ class NonMaxSuppression final : public OpKernel, public NonMaxSuppressionBase {
   }
 
   Status Compute(OpKernelContext* context) const override;
-
- private:
-  Status GetThresholdsFromInputs(OpKernelContext* ctx,
-                                 int64_t& max_output_boxes_per_class,
-                                 float& iou_threshold,
-                                 bool& has_score_threshold,
-                                 float& score_threshold) const;
 };
 }  // namespace onnxruntime
