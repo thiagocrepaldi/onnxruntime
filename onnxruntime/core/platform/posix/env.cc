@@ -116,6 +116,7 @@ class PosixEnv : public Env {
       assert(static_cast<size_t>(bytes_read) <= bytes_to_read);
       wptr += bytes_read;
       length_remain -= bytes_read;
+      offset += bytes_read;
     } while (length_remain > 0);
     p = buffer.release();
     deleter.f = DeleteBuffer;
