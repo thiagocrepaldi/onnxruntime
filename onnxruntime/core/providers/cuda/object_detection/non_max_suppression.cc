@@ -57,6 +57,11 @@ Status NonMaxSuppression::ComputeInternal(OpKernelContext* ctx) const {
   ret = GetThresholdsFromInputs(pc, max_output_boxes_per_class, iou_threshold, score_threshold);
   ORT_RETURN_IF_NOT(ret.IsOK(), ret.ErrorMessage());
 
+  if (0 == max_output_boxes_per_class) {
+    ctx->Output(0, {0, 3});
+    return Status::OK();
+  }
+
   return Status::OK();
 }
 

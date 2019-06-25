@@ -34,6 +34,7 @@ struct PrepareContext {
 };
 
 struct SelectedIndex {
+  ORT_DEVICE
   SelectedIndex(int64_t batch_index, int64_t class_index, int64_t box_index)
       : batch_index_(batch_index), class_index_(class_index), box_index_(box_index) {}
   SelectedIndex() = default;
