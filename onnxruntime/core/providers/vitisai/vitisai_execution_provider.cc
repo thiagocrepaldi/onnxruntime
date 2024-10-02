@@ -1,12 +1,14 @@
 // Copyright (c) 2023 Advanced Micro Devices, Inc. All rights reserved.
 // Licensed under the MIT License.
 #include "vitisai_execution_provider.h"
+#include "vitisai_allocator.h"
 
 // Standard headers/libs.
 #include <cassert>
 #include <fstream>
 #include <istream>
 #include <filesystem>
+#include <iostream>
 
 // 1st-party headers/libs.
 #include "core/platform/env_var_utils.h"
@@ -25,6 +27,9 @@ constexpr const char* VITISAI = "VITISAI";
 VitisAIExecutionProvider::VitisAIExecutionProvider(
     const ProviderOptions& info)
     : IExecutionProvider{onnxruntime::kVitisAIExecutionProvider}, info_(info) {
+  std::cout << " *************************************************************" << std::endl;
+  std::cout << " ****************** c3p0 VitisAIExecutionProvider ******************" << std::endl;
+  std::cout << " *************************************************************" << std::endl<< std::flush;
   auto it = info_.find("ep_context_enable");
   ep_ctx_enabled_ = it != info_.end() && it->second == "1";
   it = info_.find("ep_context_embed_mode");
@@ -42,6 +47,9 @@ std::shared_ptr<KernelRegistry> VitisAIExecutionProvider::GetKernelRegistry() co
 // This method is called after both `GetComputeCapabilityOps()` and `Compile()`.
 // This timing is required to work with both compilation-based EPs and non-compilation-based EPs.
 const InlinedVector<const Node*> VitisAIExecutionProvider::GetEpContextNodes() const {
+  std::cout << " *************************************************************" << std::endl;
+  std::cout << " ****************** c3p0 VitisAIExecutionProvider::GetEpContextNodes ******************" << std::endl;
+  std::cout << " *************************************************************" << std::endl<< std::flush;
   InlinedVector<const Node*> ep_context_node_ptrs;
   auto nodes = create_ep_context_nodes(**execution_providers_);
   if (nodes.has_value()) {
@@ -51,8 +59,11 @@ const InlinedVector<const Node*> VitisAIExecutionProvider::GetEpContextNodes() c
 }
 std::vector<std::unique_ptr<ComputeCapability>> VitisAIExecutionProvider::GetCapability(
     const onnxruntime::GraphViewer& graph_viewer, const IKernelLookup& kernel_lookup) const {
+  std::cout << " *************************************************************" << std::endl;
+  std::cout << " ****************** c3p0 VitisAIExecutionProvider::GetCapability ******************" << std::endl;
+  std::cout << " *************************************************************" << std::endl<< std::flush;
   if (graph_viewer.IsSubgraph()) {
-    // VITIS AI EP not support sungraph. Assigned to CPU.
+    // VITIS AI EP not support subgraph. Assigned to CPU.
     return {};
   }
   if (execution_providers_) {
@@ -71,6 +82,9 @@ std::vector<std::unique_ptr<ComputeCapability>> VitisAIExecutionProvider::GetCap
 
 common::Status VitisAIExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& fused_nodes_and_graphs,
                                                  std::vector<NodeComputeInfo>& node_compute_funcs) {
+  std::cout << " *************************************************************" << std::endl;
+  std::cout << " ****************** c3p0 VitisAIExecutionProvider::Compile ******************" << std::endl;
+  std::cout << " *************************************************************" << std::endl<< std::flush;
   for (const auto& fused_node_graph : fused_nodes_and_graphs) {
     NodeComputeInfo compute_info;
     auto& attrs = fused_node_graph.fused_node.get().GetAttributes();
@@ -97,4 +111,20 @@ common::Status VitisAIExecutionProvider::Compile(const std::vector<FusedNodeAndG
   return Status::OK();
 }
 
+// #ifdef USE_VITISAI_CPU_ALIGNED
+std::vector<AllocatorPtr> VitisAIExecutionProvider::CreatePreferredAllocators() {
+  std::cout << " *************************************************************" << std::endl;
+  std::cout << " ****************** c3p0 VitisAIExecutionProvider::CreatePreferredAllocators ******************" << std::endl;
+  std::cout << " *************************************************************" << std::endl << std::flush;
+  AllocatorCreationInfo cpu_allocator_info{
+      [this](OrtDevice::DeviceId device_id) {
+        return std::make_unique<VitisAIAllocator>(OrtDevice::CPU, device_id, VitisAI_CPU_ALIGNED);
+      },
+      0,
+  };
+
+  // fill in allocator
+  return std::vector<AllocatorPtr>{CreateAllocator(cpu_allocator_info)};
+}
+// #endif
 }  // namespace onnxruntime
