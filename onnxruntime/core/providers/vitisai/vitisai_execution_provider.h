@@ -57,6 +57,11 @@ class VitisAIExecutionProvider : public IExecutionProvider {
   // It might need to be called before loading
   // the EP context model that is compiled AOT/offline.
   void LoadEPContexModelFromFile() const;
+
+// #ifdef USE_VITISAI_CPU_ALIGNED
+  std::vector<AllocatorPtr> CreatePreferredAllocators() override;
+// #endif
+
 };
 
 }  // namespace onnxruntime
